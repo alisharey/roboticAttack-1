@@ -1,7 +1,7 @@
 #!/bin/bash
 current_dir=$(pwd)
 echo $current_dir
-python roboticAttack/VLAAttacker/TMA_wrapper.py \
+python VLAAttacker/TMA_wrapper.py \
     --maskidx 0 \
     --lr 2e-3 \
     --server $current_dir \
@@ -14,8 +14,8 @@ python roboticAttack/VLAAttacker/TMA_wrapper.py \
     --filterGripTrainTo1 false \
     --geometry true \
     --patch_size "3,50,50" \
-    --wandb_project "RELEASE_check" \
-    --wandb_entity "taowen_wang-rit" \
+    --wandb_project "DefVLA" \
+    --wandb_entity "a4ar3y-mbzuai" \
     --innerLoop 50 \
     --dataset "libero_spatial" \
     --targetAction 0

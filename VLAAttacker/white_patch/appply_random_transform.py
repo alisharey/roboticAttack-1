@@ -40,7 +40,7 @@ class RandomPatchTransform:
             [0, 0, 1]
         ], dtype=np.float32)
         
-   def simulation_random_patch(self, image, patch, geometry=False,colorjitter=False,angle=1,shx=0.1,shy=0.1,position=(0,0)):
+    def simulation_random_patch(self, image, patch, geometry=False,colorjitter=False,angle=1,shx=0.1,shy=0.1,position=(0,0)):
         """
         random paste patch to images
 
@@ -101,11 +101,16 @@ class RandomPatchTransform:
 
         return transformed_image
 
-    def apply_random_patch_batch(self, images, patch, mean, std,geometry):
+    def apply_random_patch_batch(self, images, patch, mean, std, geometry, colorjitter=False):
+        jitter = None
+        if colorjitter:
+            jitter = transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1)
         modified_images = []
         # apply patch to each image in the batch
         for im in images:
             im = torchvision.transforms.ToTensor()(im).to(self.device)
+            if jitter is not None:
+                im = jitter(im)
             img_channels, img_height, img_width = im.shape
 
             canvas = torch.ones(img_channels, img_height, img_width).to(self.device) * -100

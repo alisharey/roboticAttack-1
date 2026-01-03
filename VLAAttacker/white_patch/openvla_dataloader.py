@@ -18,7 +18,7 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 def get_bridge_dataloader(batch_size,server):
     vla_path: str = "openvla/openvla-7b"
-    data_root_dir = Path(f"{server}/openvla-main/dataset")
+    data_root_dir = Path(f"{server}/dataset")
     dataset_name = "bridge_orig"
     shuffle_buffer_size = 100_000
     image_aug = False
@@ -80,7 +80,7 @@ def get_bridge_dataloader(batch_size,server):
 
 def get_dataloader(batch_size,server,dataset,vla_path):
     # vla_path: str = "openvla/openvla-7b"
-    data_root_dir = Path(f"{server}/openvla-main/dataset")
+    data_root_dir = Path(f"{server}/dataset")
     # dataset_name = "bridge_orig"
     if dataset == "bridge_orig":
         vla_path = "openvla/openvla-7b"
