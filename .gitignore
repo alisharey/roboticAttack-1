@@ -9,7 +9,7 @@ __pycache__/
 # Distribution / packaging
 .Python
 adversarial_patches/
-experiments/
+experiments/logs/
 dataset/
 build/
 develop-eggs/
