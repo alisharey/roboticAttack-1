@@ -91,6 +91,9 @@ class GenerateConfig:
 
     seed: int = 7                                    # Random Seed (for reproducibility)
     entropy_debug: bool = False                      # Print action_dim/token counts per step
+    det_threshold: float = 0.85                      # Per-dim entropy threshold for detector
+    det_window: int = 20                             # Steps above threshold to trigger
+    det_gap_allow: int = 1                           # Allowed single-step dips
 
     # fmt: on
 
@@ -191,9 +194,9 @@ def eval_libero(cfg: GenerateConfig) -> None:
             done = False
             det_counts = None
             det_gaps = None
-            det_threshold = 0.85
-            det_window = 12
-            det_gap_allow = 1
+            det_threshold = float(cfg.det_threshold)
+            det_window = int(cfg.det_window)
+            det_gap_allow = int(cfg.det_gap_allow)
             if cfg.task_suite_name == "libero_spatial":
                 max_steps = 220  # longest training demo has 193 steps
             elif cfg.task_suite_name == "libero_object":

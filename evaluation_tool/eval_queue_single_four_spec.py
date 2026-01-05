@@ -16,6 +16,9 @@ def parse_args():
     parser.add_argument('--use_wandb', type=bool, default=None, required=False)
     parser.add_argument('--wandb_project', type=str, default=None, required=False)
     parser.add_argument('--wandb_entity', type=str, default=None, required=False)
+    parser.add_argument('--det_threshold', type=float, default=0.85, required=False)
+    parser.add_argument('--det_window', type=int, default=20, required=False)
+    parser.add_argument('--det_gap_allow', type=int, default=1, required=False)
     parser.add_argument('--task', nargs='+',
                         default=['libero_10'])
     return parser.parse_args()
@@ -111,6 +114,7 @@ def main():
             wandb_args += f" --wandb_project {args.wandb_project}"
         if args.wandb_entity:
             wandb_args += f" --wandb_entity {args.wandb_entity}"
+        wandb_args += f" --det_threshold {args.det_threshold} --det_window {args.det_window} --det_gap_allow {args.det_gap_allow}"
         train_cmd0 = (
             f"python experiments/robot/libero/run_libero_eval_args_geo_batch.py "
             f"--exp_name {item[0]['exp_name']} "

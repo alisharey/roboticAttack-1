@@ -12,3 +12,6 @@ python experiments/robot/libero/run_libero_eval.py \
     --use_wandb True \
     --wandb_project "OpenVLA-Eval" \
     --wandb_entity "a4ar3y-mbzuai" \
+    --det_threshold 0.85 \
+    --det_window 20 \
+    --det_gap_allow 1 \

@@ -6,4 +6,7 @@ python evaluation_tool/eval_queue_single_four_spec.py \
     --max_concurrent_tasks 2 \
     --task libero_10 libero_object libero_goal libero_spatial \
     --wandb_project "OpenVLA-AttackEval" \
-    --wandb_entity "a4ar3y-mbzuai"
+    --wandb_entity "a4ar3y-mbzuai" \
+    --det_threshold 0.85 \
+    --det_window 20 \
+    --det_gap_allow 1
