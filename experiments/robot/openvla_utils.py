@@ -7,6 +7,7 @@ import time
 import numpy as np
 import tensorflow as tf
 import torch
+import torch.nn.functional as F
 from PIL import Image
 from transformers import AutoConfig, AutoImageProcessor, AutoModelForVision2Seq, AutoProcessor
 
@@ -18,7 +19,7 @@ from prismatic.extern.hf.processing_prismatic import PrismaticImageProcessor, Pr
 ACTION_DIM = 7
 DATE = time.strftime("%Y_%m_%d")
 DATE_TIME = time.strftime("%Y_%m_%d-%H_%M_%S")
-DEVICE = torch.device("cuda:1") if torch.cuda.is_available() else torch.device("cpu")
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 np.set_printoptions(formatter={"float": lambda x: "{0:0.3f}".format(x)})
 
 # Initialize system prompt for OpenVLA v0.1.
@@ -33,6 +34,7 @@ def get_vla(cfg):
     # Load VLA checkpoint.
     print("[*] Instantiating Pretrained VLA model")
     print("[*] Loading in BF16 with Flash-Attention Enabled")
+    
 
     # Register OpenVLA model to HF Auto Classes (not needed if the model is on HF Hub)
     AutoConfig.register("openvla", OpenVLAConfig)
@@ -168,3 +170,108 @@ def get_vla_action(vla, processor, base_vla_name, obs, task_label, unnorm_key, c
     # Get action.
     action = vla.predict_action(**inputs, unnorm_key=unnorm_key, do_sample=False)
     return action
+
+
+def get_vla_action_with_entropy(
+    vla,
+    processor,
+    base_vla_name,
+    obs,
+    task_label,
+    unnorm_key,
+    center_crop=False,
+    debug=False,
+    step=None,
+):
+    """Generates an action with per-token entropy for the action tokens."""
+    image = Image.fromarray(obs["full_image"])
+    image = image.convert("RGB")
+
+    if center_crop:
+        batch_size = 1
+        crop_scale = 0.9
+        image = tf.convert_to_tensor(np.array(image))
+        orig_dtype = image.dtype
+        image = tf.image.convert_image_dtype(image, tf.float32)
+        image = crop_and_resize(image, crop_scale, batch_size)
+        image = tf.clip_by_value(image, 0, 1)
+        image = tf.image.convert_image_dtype(image, orig_dtype, saturate=True)
+        image = Image.fromarray(image.numpy())
+        image = image.convert("RGB")
+
+    if "openvla-v01" in base_vla_name:
+        prompt = (
+            f"{OPENVLA_V01_SYSTEM_PROMPT} USER: What action should the robot take to {task_label.lower()}? ASSISTANT:"
+        )
+    else:
+        prompt = f"In: What action should the robot take to {task_label.lower()}?\nOut:"
+
+    inputs = processor(prompt, image).to(DEVICE, dtype=torch.bfloat16)
+    input_ids = inputs["input_ids"]
+    if input_ids.dtype != torch.long:
+        input_ids = input_ids.long()
+    if not torch.all(input_ids[:, -1] == 29871):
+        pad = torch.tensor([[29871]], device=input_ids.device, dtype=input_ids.dtype)
+        input_ids = torch.cat((input_ids, pad), dim=1)
+        if "attention_mask" in inputs:
+            attention_mask = inputs["attention_mask"]
+            if attention_mask.dtype != torch.long:
+                attention_mask = attention_mask.long()
+            attention_mask = torch.cat(
+                (attention_mask, torch.ones_like(pad)), dim=1
+            )
+        else:
+            attention_mask = None
+    else:
+        attention_mask = inputs.get("attention_mask")
+        if attention_mask is not None and attention_mask.dtype != torch.long:
+            attention_mask = attention_mask.long()
+
+    action_dim = vla.get_action_dim(unnorm_key)
+    gen_kwargs = {
+        "input_ids": input_ids,
+        "max_new_tokens": action_dim,
+        "do_sample": False,
+        "return_dict_in_generate": True,
+        "output_scores": True,
+    }
+    if attention_mask is not None:
+        gen_kwargs["attention_mask"] = attention_mask
+    if "pixel_values" in inputs:
+        gen_kwargs["pixel_values"] = inputs["pixel_values"]
+
+    outputs = vla.generate(**gen_kwargs)
+    scores = outputs.scores
+    if scores is None:
+        raise ValueError("OpenVLA generate did not return scores; cannot compute entropy.")
+    logits = torch.stack(scores, dim=0).float()  # (T, B, V)
+    log_p = F.log_softmax(logits, dim=-1)
+    entropy = -(log_p.exp() * log_p).sum(dim=-1)  # (T, B)
+    entropy_per_token = entropy[:, 0].detach().cpu().numpy()
+    entropy_mean = float(entropy_per_token.mean())
+    if debug:
+        token_count = len(scores)
+        step_str = f" step={step}" if step is not None else ""
+        token_str = ", ".join(f"{v:.3f}" for v in entropy_per_token)
+        print(
+            f"[entropy]{step_str} action_dim={action_dim} gen_tokens={token_count} "
+            f"mean={entropy_mean:.3f} tokens=[{token_str}]"
+        )
+
+    generated_ids = outputs.sequences
+    predicted_action_token_ids = generated_ids[0, -action_dim:].detach().cpu().numpy()
+    discretized_actions = vla.vocab_size - predicted_action_token_ids
+    discretized_actions = np.clip(
+        discretized_actions - 1, a_min=0, a_max=vla.bin_centers.shape[0] - 1
+    )
+    normalized_actions = vla.bin_centers[discretized_actions]
+    action_norm_stats = vla.get_action_stats(unnorm_key)
+    mask = action_norm_stats.get("mask", np.ones_like(action_norm_stats["q01"], dtype=bool))
+    action_high, action_low = np.array(action_norm_stats["q99"]), np.array(action_norm_stats["q01"])
+    actions = np.where(
+        mask,
+        0.5 * (normalized_actions + 1) * (action_high - action_low) + action_low,
+        normalized_actions,
+    )
+
+    return actions, entropy_mean, entropy_per_token

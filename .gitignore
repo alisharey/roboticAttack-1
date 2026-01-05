@@ -8,6 +8,8 @@ __pycache__/
 
 # Distribution / packaging
 .Python
+adversarial_patches/
+experiments/
 dataset/
 build/
 develop-eggs/

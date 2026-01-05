@@ -28,17 +28,23 @@ import numpy as np
 import tqdm
 from libero.libero import benchmark
 
+os.environ["MUJOCO_GL"] = "osmesa"
+os.environ["PYOPENGL_PLATFORM"] = "osmesa"
+
+
 import wandb
-import sys
-sys.path.append("PATH TO/white_patch")
-from appply_random_transform import RandomPatchTransform
 import torch
-import os
 import random
 
 
-# Append current directory so that interpreter can find experiments.robot
-sys.path.append("../..")
+# Append repo root so that interpreter can find experiments.robot
+ROOT_DIR = Path(__file__).resolve().parents[3]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+WHITE_PATCH_DIR = ROOT_DIR / "VLAAttacker" / "white_patch"
+if str(WHITE_PATCH_DIR) not in sys.path:
+    sys.path.insert(0, str(WHITE_PATCH_DIR))
+from appply_random_transform import RandomPatchTransform
 from experiments.robot.libero.libero_utils import (
     get_libero_dummy_action,
     get_libero_env,
@@ -50,6 +56,7 @@ from experiments.robot.openvla_utils import get_processor
 from experiments.robot.robot_utils import (
     DATE_TIME,
     get_action,
+    get_action_with_entropy,
     get_image_resize_size,
     get_model,
     invert_gripper_action,
@@ -111,7 +118,7 @@ def eval_libero(cfg) -> None:
     cfg.unnorm_key = cfg.task_suite_name
 
     # Load model
-    model = get_model(cfg,DEVICE=f"cuda:{cfg.cudaid}")
+    model = get_model(cfg)
 
     # [OpenVLA] Check that the model contains the action un-normalization key
     if cfg.model_family == "openvla":
@@ -155,6 +162,7 @@ def eval_libero(cfg) -> None:
 
     # Start evaluation
     total_episodes, total_successes = 0, 0
+    total_tp, total_fp, total_fn = 0, 0, 0
     for task_id in tqdm.tqdm(range(num_tasks_in_suite)):
         # Get task
         task = task_suite.get_task(task_id)
@@ -167,6 +175,7 @@ def eval_libero(cfg) -> None:
 
         # Start episodes
         task_episodes, task_successes = 0, 0
+        task_tp, task_fp, task_fn = 0, 0, 0
         for episode_idx in tqdm.tqdm(range(cfg.num_trials_per_task)):
             print(f"\nTask: {task_description}")
             log_file.write(f"\nTask: {task_description}\n")
@@ -180,6 +189,17 @@ def eval_libero(cfg) -> None:
             # Setup
             t = 0
             replay_images = []
+            entropy_values = []
+            overlay_texts = []
+            entropy_series = []
+            risk_values = []
+            episode_detected = False
+            done = False
+            det_counts = None
+            det_gaps = None
+            det_threshold = 0.85
+            det_window = 12
+            det_gap_allow = 1
             if cfg.task_suite_name == "libero_spatial":
                 max_steps = 193  # longest training demo has 193 steps
             elif cfg.task_suite_name == "libero_object":
@@ -218,14 +238,41 @@ def eval_libero(cfg) -> None:
                     }
 
                     # Query model to get action
-                    action = get_action(
+                    action, entropy_mean, entropy_tokens = get_action_with_entropy(
                         cfg,
                         model,
                         observation,
                         task_description,
                         processor=processor,
                         DEVICE=f"cuda:{cfg.cudaid}",
+                        debug=cfg.entropy_debug,
+                        step=t,
                     )
+                    entropy_values.append(entropy_mean)
+                    entropy_series.append(entropy_tokens)
+                    if det_counts is None:
+                        det_counts = [0] * len(entropy_tokens)
+                        det_gaps = [0] * len(entropy_tokens)
+                    high_mask = entropy_tokens > det_threshold
+                    for i, is_high in enumerate(high_mask):
+                        if is_high:
+                            det_counts[i] += 1
+                            det_gaps[i] = 0
+                        else:
+                            if det_gaps[i] < det_gap_allow:
+                                det_gaps[i] += 1
+                            else:
+                                det_counts[i] = 0
+                                det_gaps[i] = 0
+                    detected = any(count >= det_window for count in det_counts)
+                    if detected:
+                        episode_detected = True
+                    token_str = ",".join(f"{v:.3f}" for v in entropy_tokens)
+                    overlay_texts.append(f"H={entropy_mean:.3f}\nT=[{token_str}]\nALERT={int(detected)}")
+                    window = entropy_values[-10:]
+                    risk_values.append(float(sum(window) / len(window)))
+                    if cfg.use_wandb:
+                        wandb.log({"entropy/step": entropy_mean})
 
                     # Normalize gripper action [0,1] -> [-1,+1] because the environment expects the latter
                     action = normalize_gripper_action(action, binarize=True)
@@ -254,29 +301,60 @@ def eval_libero(cfg) -> None:
             # Save a replay video of the episode
             print(f"Saving replay video...")
             save_rollout_video(
-                replay_images, total_episodes, success=done, task_description=task_description, log_file=log_file,exp_name=cfg.exp_name
+                replay_images,
+                total_episodes,
+                success=done,
+                task_description=task_description,
+                log_file=log_file,
+                exp_name=cfg.exp_name,
+                suite_name=cfg.task_suite_name,
+                overlay_texts=overlay_texts,
+                entropy_series=entropy_series,
+                risk_series=risk_values,
             )
 
             # Log current results
             print(f"Success: {done}")
+            print(f"Detected: {episode_detected}")
             print(f"# episodes completed so far: {total_episodes}")
             print(f"# successes: {total_successes} ({total_successes / total_episodes * 100:.1f}%)")
             log_file.write(f"Success: {done}\n")
+            log_file.write(f"Detected: {episode_detected}\n")
             log_file.write(f"# episodes completed so far: {total_episodes}\n")
             log_file.write(f"# successes: {total_successes} ({total_successes / total_episodes * 100:.1f}%)\n")
             log_file.flush()
+            if done:
+                if episode_detected:
+                    task_fp += 1
+                    total_fp += 1
+            else:
+                if episode_detected:
+                    task_tp += 1
+                    total_tp += 1
+                else:
+                    task_fn += 1
+                    total_fn += 1
 
         # Log final results
         print(f"Current task success rate: {float(task_successes) / float(task_episodes)}")
         print(f"Current total success rate: {float(total_successes) / float(total_episodes)}")
+        task_failures = task_episodes - task_successes
+        task_tpr = float(task_tp) / float(task_failures) if task_failures > 0 else 0.0
+        task_fpr = float(task_fp) / float(task_successes) if task_successes > 0 else 0.0
+        print(f"Current task detection TPR: {task_tpr:.3f}")
+        print(f"Current task detection FPR: {task_fpr:.3f}")
         log_file.write(f"Current task success rate: {float(task_successes) / float(task_episodes)}\n")
         log_file.write(f"Current total success rate: {float(total_successes) / float(total_episodes)}\n")
+        log_file.write(f"Current task detection TPR: {task_tpr:.3f}\n")
+        log_file.write(f"Current task detection FPR: {task_fpr:.3f}\n")
         log_file.flush()
         if cfg.use_wandb:
             wandb.log(
                 {
                     f"success_rate/{task_description}": float(task_successes) / float(task_episodes),
                     f"num_episodes/{task_description}": task_episodes,
+                    f"detection_tpr/{task_description}": task_tpr,
+                    f"detection_fpr/{task_description}": task_fpr,
                 }
             )
 
@@ -295,7 +373,17 @@ def eval_libero(cfg) -> None:
         wandb.save(local_log_filepath)
     # 追加模式打开文件并添加新内容
     with open(os.path.join(cfg.local_log_dir,cfg.task_suite_name+".txt"), "a") as file:
-        file.write(f"success_rate/total:{float(total_successes) / float(total_episodes)}, num_episodes/total:{total_episodes} position_info:{cfg.angle}_{cfg.shx}_{cfg.shy}_{cfg.x}_{cfg.y} \n")  # 在新行添加内容
+        total_failures = total_episodes - total_successes
+        total_tpr = float(total_tp) / float(total_failures) if total_failures > 0 else 0.0
+        total_fpr = float(total_fp) / float(total_successes) if total_successes > 0 else 0.0
+        file.write(
+            "success_rate/total:"
+            f"{float(total_successes) / float(total_episodes)}, "
+            f"num_episodes/total:{total_episodes} "
+            f"detection_tpr/total:{total_tpr:.3f} "
+            f"detection_fpr/total:{total_fpr:.3f} "
+            f"position_info:{cfg.angle}_{cfg.shx}_{cfg.shy}_{cfg.x}_{cfg.y}\n"
+        )
 
 import argparse
 from pathlib import Path
@@ -336,6 +424,7 @@ def parse_args():
     parser.add_argument("--shx", type=float, default=2, help="")
     parser.add_argument("--shy", type=float, default=2, help="")
     parser.add_argument("--cudaid", type=int, default=2, help="")
+    parser.add_argument("--entropy_debug", type=bool, default=False, help="Print action_dim/token counts per step")
 
     args = parser.parse_args()
     return args

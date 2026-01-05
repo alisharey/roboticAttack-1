@@ -13,9 +13,35 @@ def parse_args():
     parser.add_argument('--cudaid', type=int, default=3, required=False)
     parser.add_argument('--trials', type=int, default=50, required=False)
     parser.add_argument('--max_concurrent_tasks', type=int, default=1, required=False)
+    parser.add_argument('--use_wandb', type=bool, default=None, required=False)
+    parser.add_argument('--wandb_project', type=str, default=None, required=False)
+    parser.add_argument('--wandb_entity', type=str, default=None, required=False)
     parser.add_argument('--task', nargs='+',
                         default=['libero_10'])
     return parser.parse_args()
+
+def _resolve_patch_dir(exp_path: str):
+    exp_path = os.path.abspath(exp_path)
+    if os.path.isfile(exp_path):
+        if exp_path.endswith(".pt"):
+            return os.path.dirname(exp_path), exp_path
+        raise ValueError(f"Expected a .pt patch file, got {exp_path}")
+    if os.path.exists(os.path.join(exp_path, "patch.pt")):
+        return exp_path, os.path.join(exp_path, "patch.pt")
+    subdirs = [
+        d
+        for d in os.listdir(exp_path)
+        if os.path.isdir(os.path.join(exp_path, d))
+    ]
+    if not subdirs:
+        raise FileNotFoundError(f"No patch.pt or run subdir found under {exp_path}")
+    subdirs.sort()
+    iter_filepath = os.path.join(exp_path, subdirs[0])
+    pt_filepath = os.path.join(iter_filepath, "patch.pt")
+    if not os.path.exists(pt_filepath):
+        raise FileNotFoundError(f"Missing patch.pt under {iter_filepath}")
+    return iter_filepath, pt_filepath
+
 
 def organize_exp(exp_path,args):
     data = []
@@ -29,11 +55,10 @@ def organize_exp(exp_path,args):
         data.append({"dataset":"libero_spatial", "checkpoints":"openvla/openvla-7b-finetuned-libero-spatial", "x": 120, "y": 160, "angle": 0, "shx": 0, "shy": 0})
     
     task_list = []
-    iter_filename = os.listdir(exp_path)[0]
-    iter_filepath = os.path.join(exp_path, iter_filename)
-    pt_filepath = os.path.join(iter_filepath, "patch.pt")
+    iter_filepath, pt_filepath = _resolve_patch_dir(exp_path)
+    stamp = time.strftime("%Y%m%d_%H%M%S")
     for j in range(len(data)):
-        run_id_note=f'{str(data[j]["x"])}_{str(data[j]["y"])}_{str(data[j]["angle"])}_{str(data[j]["shx"])}_{str(data[j]["shy"])}'
+        run_id_note=f'{str(data[j]["x"])}_{str(data[j]["y"])}_{str(data[j]["angle"])}_{str(data[j]["shx"])}_{str(data[j]["shy"])}_{stamp}'
         exp = copy.deepcopy(data[j])
         if os.path.exists(os.path.join(iter_filepath, f"EVAL-{exp['dataset']}--{run_id_note}.txt")):
             print(f"exclude: EVAL-{exp['dataset']}--{run_id_note}.txt")
@@ -79,7 +104,30 @@ def main():
     random.shuffle(origin_task_list)
     task_list = []
     for item in origin_task_list:
-        train_cmd0 = f"python experiments/robot/libero/run_libero_eval_args_geo_batch.py --exp_name {item[0]['exp_name']} --pretrained_checkpoint {item[0]['checkpoints']} --task_suite_name {item[0]['dataset']} --num_trials_per_task {args.trials} --run_id_note {item[0]['run_id_note']} --local_log_dir {item[0]['local_log_dir']} --patchroot {item[0]['patchroot']} --cudaid {args.cudaid} --x {item[0]['x']} --y {item[0]['y']} --angle {item[0]['angle']} --shx {item[0]['shx']} --shy {item[0]['shy']} "
+        wandb_args = ""
+        if args.use_wandb is not None:
+            wandb_args += f" --use_wandb {args.use_wandb}"
+        if args.wandb_project:
+            wandb_args += f" --wandb_project {args.wandb_project}"
+        if args.wandb_entity:
+            wandb_args += f" --wandb_entity {args.wandb_entity}"
+        train_cmd0 = (
+            f"python experiments/robot/libero/run_libero_eval_args_geo_batch.py "
+            f"--exp_name {item[0]['exp_name']} "
+            f"--pretrained_checkpoint {item[0]['checkpoints']} "
+            f"--task_suite_name {item[0]['dataset']} "
+            f"--num_trials_per_task {args.trials} "
+            f"--run_id_note {item[0]['run_id_note']} "
+            f"--local_log_dir {item[0]['local_log_dir']} "
+            f"--patchroot {item[0]['patchroot']} "
+            f"--cudaid {args.cudaid} "
+            f"--x {item[0]['x']} "
+            f"--y {item[0]['y']} "
+            f"--angle {item[0]['angle']} "
+            f"--shx {item[0]['shx']} "
+            f"--shy {item[0]['shy']}"
+            f"{wandb_args}"
+        )
         task_list.append([train_cmd0,item[1]])
     max_concurrent_tasks = args.max_concurrent_tasks  # Number of concurrent tasks
     task_queue = queue.Queue()

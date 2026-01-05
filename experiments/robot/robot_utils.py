@@ -10,6 +10,7 @@ import torch
 from experiments.robot.openvla_utils import (
     get_vla,
     get_vla_action,
+    get_vla_action_with_entropy,
 )
 
 # Initialize important constants and pretty-printing mode in NumPy.
@@ -60,7 +61,7 @@ def get_image_resize_size(cfg):
     return resize_size
 
 
-def get_action(cfg, model, obs, task_label, processor=None):
+def get_action(cfg, model, obs, task_label, processor=None, **kwargs):
     """Queries the model to get an action."""
     if cfg.model_family == "openvla":
         action = get_vla_action(
@@ -70,6 +71,27 @@ def get_action(cfg, model, obs, task_label, processor=None):
     else:
         raise ValueError("Unexpected `model_family` found in config.")
     return action
+
+
+def get_action_with_entropy(cfg, model, obs, task_label, processor=None, **kwargs):
+    """Queries the model to get an action and its entropy summary."""
+    if cfg.model_family == "openvla":
+        debug = bool(kwargs.get("debug", False))
+        step = kwargs.get("step")
+        action, entropy_mean, entropy_tokens = get_vla_action_with_entropy(
+            model,
+            processor,
+            cfg.pretrained_checkpoint,
+            obs,
+            task_label,
+            cfg.unnorm_key,
+            center_crop=cfg.center_crop,
+            debug=debug,
+            step=step,
+        )
+        assert action.shape == (ACTION_DIM,)
+        return action, entropy_mean, entropy_tokens
+    raise ValueError("Unexpected `model_family` found in config.")
 
 
 def normalize_gripper_action(action, binarize=True):
